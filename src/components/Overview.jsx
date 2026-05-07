@@ -1,5 +1,6 @@
 import KPIBar from './KPIBar';
-import { transactions, news, distressItems, exitItems } from '../mockData';
+import { transactions, news as mockNews, distressItems, exitItems } from '../mockData';
+import { useLiveData } from '../useLiveData';
 
 function SectionHeader({ title, subtitle, link = 'View all →' }) {
   return (
@@ -33,7 +34,21 @@ function TagBadge({ tag }) {
 
 export default function Overview() {
   const recentTx = transactions.slice(0, 5);
-  const recentNews = news.slice(0, 4);
+
+  const { data: newsData, source: newsSource } = useLiveData('/api/news', { articles: mockNews });
+  const liveArticles = newsData?.articles ?? mockNews;
+
+  // Normalise: live API returns a flat object per article; mock uses id/headline/etc.
+  const recentNews = liveArticles.slice(0, 4).map((a, i) => ({
+    id: a.id ?? i,
+    headline: a.headline ?? a.title,
+    summary: a.summary ?? a.description ?? '',
+    source: a.source,
+    date: a.date ?? a.publishedAt,
+    tag: a.tag ?? (a.tags?.[0] || 'Industry'),
+    url: a.url ?? '#',
+    urgent: a.urgent ?? false,
+  }));
 
   return (
     <div>
@@ -152,7 +167,10 @@ export default function Overview() {
       {/* Top News */}
       <div className="mt-6 bg-white rounded-lg border border-gray-200">
         <div className="px-5 pt-5 pb-3">
-          <SectionHeader title="Top News" subtitle="AI-summarized — last 14 days" />
+          <SectionHeader
+            title="Top News"
+            subtitle={newsSource === 'live' ? 'Live via NewsAPI · refreshes every 15 min' : 'AI-summarized — mock data (add NEWS_API_KEY to go live)'}
+          />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-0 divide-y md:divide-y-0 md:divide-x divide-gray-100">
           {recentNews.map((item, i) => (

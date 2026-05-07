@@ -1,4 +1,5 @@
-import { commodities } from '../mockData';
+import { commodities as mockCommodities } from '../mockData';
+import { useLiveData } from '../useLiveData';
 
 function ChangeCell({ value, trend }) {
   const isUp = trend === 'up';
@@ -13,6 +14,25 @@ function ChangeCell({ value, trend }) {
 }
 
 export default function CommodityPrices() {
+  const { data: commodityData, source: commoditySource } = useLiveData(
+    '/api/commodities',
+    { commodities: {} },
+    60 * 60 * 1000, // re-fetch hourly
+  );
+
+  // Convert API object map → array matching mock shape
+  const commodities = commodityData?.commodities
+    ? Object.values(commodityData.commodities).map((c) => ({
+        name: c.name,
+        unit: c.unit,
+        price: c.price > 1 ? `$${c.price.toLocaleString()}` : `$${c.price.toFixed(4)}`,
+        change30d: `${Math.abs(c.change30d)}%`,
+        trend30d: c.change30d >= 0 ? 'up' : 'down',
+        changeYoY: `${Math.abs(c.changeYoY)}%`,
+        trendYoY: c.changeYoY >= 0 ? 'up' : 'down',
+      }))
+    : mockCommodities;
+
   const highRisk = commodities.filter((c) => c.trend30d === 'up' && parseFloat(c.change30d) > 5);
 
   return (
@@ -48,7 +68,9 @@ export default function CommodityPrices() {
           <h3 className="text-sm font-semibold text-gray-800">Spot Prices</h3>
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
-            <span className="text-xs text-gray-500">Updated Nov 15, 2025</span>
+            <span className="text-xs text-gray-500">
+              {commoditySource === 'live' ? 'Live via Alpha Vantage' : 'Mock data — add ALPHA_VANTAGE_KEY to go live'} · {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            </span>
           </div>
         </div>
         <div className="overflow-x-auto">
