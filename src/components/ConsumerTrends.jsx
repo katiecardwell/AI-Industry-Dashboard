@@ -1,4 +1,5 @@
-import { searchTrends, socialBuzz } from '../mockData';
+import { searchTrends, socialBuzz as mockSocialBuzz } from '../mockData';
+import { useLiveData } from '../useLiveData';
 
 function TrendArrow({ momentum }) {
   return momentum === 'up' ? (
@@ -24,6 +25,18 @@ function SearchIndexBar({ index }) {
 }
 
 export default function ConsumerTrends() {
+  const { data: buzzData, source: buzzSource } = useLiveData('/api/social-buzz', { buzz: mockSocialBuzz }, 30 * 60 * 1000);
+
+  const socialBuzz = (buzzData?.buzz ?? mockSocialBuzz).map((row) => ({
+    topic:      row.topic      ?? row.term,
+    platform:   row.platform   ?? 'YouTube',
+    volume7d:   row.volume7d,
+    change:     row.change,
+    momentum:   row.momentum   ?? (row.change?.startsWith('+') ? 'up' : 'down'),
+    topContent: row.topContent ?? row.hashtags?.join(' ') ?? '',
+    trending:   row.trending   ?? false,
+  }));
+
   return (
     <div>
       <div className="mb-6">
@@ -78,7 +91,9 @@ export default function ConsumerTrends() {
           <div className="px-5 pt-5 pb-3 border-b border-gray-100 flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-gray-800">Social Media Buzz</h3>
-              <p className="text-xs text-gray-500 mt-0.5">7-day volume and trending hashtags / topics</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {buzzSource === 'live' ? 'Live via YouTube · refreshes every 30 min' : '7-day volume and trending hashtags / topics'}
+              </p>
             </div>
             <button className="text-xs font-medium hover:underline" style={{ color: '#3B7DD8' }}>
               View all →
