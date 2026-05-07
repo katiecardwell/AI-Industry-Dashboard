@@ -55,7 +55,7 @@ export default function Transactions() {
       }
       return true;
     });
-  }, [typeFilter, dateFilter, sectorFilter, search]);
+  }, [typeFilter, dateFilter, sectorFilter, search, transactions]);
 
   return (
     <div>

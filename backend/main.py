@@ -23,6 +23,7 @@ _commodity_cache: TTLCache = TTLCache(maxsize=10, ttl=3600)   # 60 min
 _social_cache:    TTLCache = TTLCache(maxsize=10, ttl=1800)   # 30 min
 _insights_cache:  TTLCache = TTLCache(maxsize=10, ttl=3600)   # 60 min
 _deals_cache:     TTLCache = TTLCache(maxsize=10, ttl=3600)   # 60 min
+_distress_cache:  TTLCache = TTLCache(maxsize=10, ttl=1800)  # 30 min
 
 NEWS_API_KEY    = os.getenv("NEWS_API_KEY", "")
 FMP_API_KEY     = os.getenv("FMP_API_KEY", "")
@@ -104,6 +105,19 @@ MOCK_INSIGHTS = [
     {"company": "Tessemae's",           "subSector": "Condiments / Dressings",   "score": 79, "thesis": "Organic refrigerated dressings with loyal consumer base. Underpenetrated in food service and international. Balance sheet restructuring creates entry point.", "drivers": ["Organic Premium", "Foodservice Upside", "Distressed Entry"]},
 ]
 
+MOCK_DISTRESS = {
+    "distress": [
+        {"id": 1, "company": "FreshRealm", "signal": "High Leverage", "severity": "high", "detail": "Net debt/EBITDA >8x following 2023 expansion. Covenant pressure expected Q2.", "url": "#"},
+        {"id": 2, "company": "B&G Foods", "signal": "Margin Pressure", "severity": "medium", "detail": "Gross margins down 320bps YoY. Commodity inflation outpacing pricing power.", "url": "#"},
+        {"id": 3, "company": "SunOpta", "signal": "Liquidity Watch", "severity": "medium", "detail": "Free cash flow negative for 3 consecutive quarters. Revolver draw increasing.", "url": "#"},
+    ],
+    "exits": [
+        {"id": 1, "company": "Poppi", "buyer": "PepsiCo", "moic": "N/A", "evAmount": "$1.95B", "date": "2024-02-15"},
+        {"id": 2, "company": "Kellanova", "buyer": "Mars Inc.", "moic": "N/A", "evAmount": "$35.9B", "date": "2024-08-14"},
+        {"id": 3, "company": "Sovos Brands", "buyer": "Campbell Soup", "moic": "2.1x", "evAmount": "$2.7B", "date": "2024-04-10"},
+    ],
+}
+
 MOCK_DEALS = [
     {"id": 1,  "date": "2024-08-14", "target": "Kellanova",        "buyer": "Mars Inc.",          "type": "Acquisition",    "sector": "Snacks",     "evAmount": "$35.9B", "status": "Closed"},
     {"id": 2,  "date": "2024-06-01", "target": "Liquid I.V.",      "buyer": "Unilever",           "type": "Acquisition",    "sector": "Beverages",  "evAmount": "$700M",  "status": "Closed"},
@@ -161,10 +175,14 @@ async def get_news():
     if cache_key in _news_cache:
         return _news_cache[cache_key]
 
-    query = "food AND (acquisition OR merger OR IPO OR recall OR earnings OR commodity OR beverage)"
+    # Specific F&B company/category terms to anchor results
+    query = (
+        '("food" OR "beverage" OR "CPG" OR "snack" OR "dairy" OR "grocery" OR "restaurant" OR "ingredient" OR "flavor")'
+        ' AND ("acquisition" OR "merger" OR "IPO" OR "earnings" OR "recall" OR "commodity" OR "private equity" OR "brand")'
+    )
     url = (
         f"https://newsapi.org/v2/everything"
-        f"?q={query}&language=en&sortBy=publishedAt&pageSize=10"
+        f"?q={query}&language=en&sortBy=publishedAt&pageSize=20"
         f"&apiKey={NEWS_API_KEY}"
     )
 
@@ -173,7 +191,37 @@ async def get_news():
         if resp.status_code != 200:
             return {"source": "mock", "articles": MOCK_NEWS}
 
-    raw_articles = resp.json().get("articles", [])[:8]
+    raw_articles = resp.json().get("articles", [])
+
+    # Use Anthropic to filter to genuinely F&B-relevant articles and pick the best 6
+    if ANTHROPIC_KEY and raw_articles:
+        headlines_for_filter = "\n".join(
+            f"{i}. {a.get('title','')} — {a.get('source',{}).get('name','')}"
+            for i, a in enumerate(raw_articles[:20])
+        )
+        filter_prompt = f"""You are a PE analyst focused on food & beverage (CPG, ingredients, suppliers, restaurants, grocery, nutrition, beverages, snacks, dairy, protein).
+
+From these headlines, return a JSON array of the index numbers (0-based) of articles that are genuinely relevant to the food & beverage industry. Include companies that make, sell, supply, or distribute food/beverage products. Exclude general finance, tech, politics, or unrelated industries.
+
+Headlines:
+{headlines_for_filter}
+
+Return ONLY a JSON array of integers e.g. [0, 2, 5]. Pick the 6 most relevant."""
+        try:
+            import json as _json
+            ai_client = _anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+            filter_msg = ai_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=100,
+                messages=[{"role": "user", "content": filter_prompt}],
+            )
+            indices = _json.loads(filter_msg.content[0].text.strip())
+            raw_articles = [raw_articles[i] for i in indices if i < len(raw_articles)]
+        except Exception:
+            raw_articles = raw_articles[:8]
+    else:
+        raw_articles = raw_articles[:8]
+
     articles = []
     for a in raw_articles:
         raw_text = (a.get("title") or "") + ". " + (a.get("description") or "")
@@ -320,6 +368,98 @@ Respond with ONLY valid JSON array, no markdown."""
 
     _insights_cache[cache_key] = result
     return result
+
+# ---------------------------------------------------------------------------
+# /api/distress  — NewsAPI search → Anthropic distress & exit extraction
+# ---------------------------------------------------------------------------
+
+@app.get("/api/distress")
+async def get_distress():
+    cache_key = "distress"
+    if cache_key in _distress_cache:
+        return _distress_cache[cache_key]
+
+    if not NEWS_API_KEY or not ANTHROPIC_KEY:
+        return {"source": "mock", **MOCK_DISTRESS}
+
+    distress_query = (
+        '("food" OR "beverage" OR "CPG" OR "grocery" OR "restaurant")'
+        ' AND ("bankruptcy" OR "debt" OR "leverage" OR "covenant" OR "liquidity" OR "restructuring"'
+        ' OR "credit" OR "downgrade" OR "margin pressure" OR "cash flow")'
+    )
+    exit_query = (
+        '("food" OR "beverage" OR "CPG" OR "snack" OR "dairy")'
+        ' AND ("acquired" OR "acquisition" OR "IPO" OR "exit" OR "sold to" OR "private equity" OR "buyout")'
+    )
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        d_resp, e_resp = await _gather(
+            client.get(f"https://newsapi.org/v2/everything?q={distress_query}&language=en&sortBy=publishedAt&pageSize=10&apiKey={NEWS_API_KEY}"),
+            client.get(f"https://newsapi.org/v2/everything?q={exit_query}&language=en&sortBy=publishedAt&pageSize=10&apiKey={NEWS_API_KEY}"),
+        )
+
+    distress_headlines = _format_headlines(d_resp)
+    exit_headlines = _format_headlines(e_resp)
+
+    prompt = f"""You are a PE distress analyst covering food & beverage.
+
+From these news headlines, extract:
+1. Distress signals (high leverage, liquidity issues, covenant breaches, margin pressure, restructuring)
+2. Exit events (acquisitions closed, IPOs, PE exits)
+
+Distress headlines:
+{distress_headlines}
+
+Exit headlines:
+{exit_headlines}
+
+Return JSON with two arrays:
+{{
+  "distress": [
+    {{"company": "Name", "signal": "Short signal label", "severity": "high|medium|low", "detail": "1-2 sentence PE-relevant detail"}}
+  ],
+  "exits": [
+    {{"company": "Target name", "buyer": "Acquirer or 'IPO'", "moic": "e.g. 2.1x or N/A", "evAmount": "e.g. $1.2B or Undisclosed", "date": "YYYY-MM-DD"}}
+  ]
+}}
+
+Only include clear F&B companies. Return empty arrays if nothing relevant found. Respond with ONLY valid JSON, no markdown."""
+
+    try:
+        import json as _json
+        ai_client = _anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+        msg = ai_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        parsed = _json.loads(msg.content[0].text)
+        distress = parsed.get("distress") or MOCK_DISTRESS["distress"]
+        exits = parsed.get("exits") or MOCK_DISTRESS["exits"]
+        for i, d in enumerate(distress): d["id"] = i + 1
+        for i, e in enumerate(exits):    e["id"] = i + 1
+        result = {"source": "live", "distress": distress, "exits": exits}
+    except Exception:
+        result = {"source": "mock", **MOCK_DISTRESS}
+
+    _distress_cache[cache_key] = result
+    return result
+
+
+async def _gather(*coros):
+    import asyncio
+    return await asyncio.gather(*coros, return_exceptions=True)
+
+
+def _format_headlines(resp) -> str:
+    if isinstance(resp, Exception) or not hasattr(resp, 'json'):
+        return "(unavailable)"
+    try:
+        articles = resp.json().get("articles", [])[:10]
+        return "\n".join(f"- [{a.get('publishedAt','')[:10]}] {a.get('title','')}" for a in articles)
+    except Exception:
+        return "(unavailable)"
+
 
 # ---------------------------------------------------------------------------
 # /api/deals  — NewsAPI M&A search → Anthropic deal extraction

@@ -1,5 +1,5 @@
 import KPIBar from './KPIBar';
-import { transactions as mockTransactions, news as mockNews, distressItems, exitItems } from '../mockData';
+import { transactions as mockTransactions, news as mockNews, distressItems, exitItems as mockExitItems } from '../mockData';
 import { useLiveData } from '../useLiveData';
 
 function SectionHeader({ title, subtitle, link = 'View all →' }) {
@@ -36,6 +36,10 @@ export default function Overview() {
   const { data: dealsData } = useLiveData('/api/deals', { deals: mockTransactions }, 60 * 60 * 1000);
   const transactions = (dealsData?.deals ?? mockTransactions).map((d, i) => ({ ...d, id: d.id ?? i }));
   const recentTx = transactions.slice(0, 5);
+
+  const { data: distressData } = useLiveData('/api/distress', { distress: distressItems, exits: mockExitItems }, 30 * 60 * 1000);
+  const liveDistress = distressData?.distress ?? distressItems;
+  const liveExits    = distressData?.exits    ?? mockExitItems;
 
   const { data: newsData, source: newsSource } = useLiveData('/api/news', { articles: mockNews });
   const liveArticles = newsData?.articles ?? mockNews;
@@ -115,7 +119,7 @@ export default function Overview() {
           <div className="px-5 mb-4">
             <div className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">Distress Watch</div>
             <div className="space-y-2">
-              {distressItems.map((item) => (
+              {liveDistress.map((item) => (
                 <div
                   key={item.id}
                   className="flex items-start gap-2.5 p-2.5 rounded"
@@ -147,7 +151,7 @@ export default function Overview() {
           <div className="px-5 pb-5">
             <div className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">Recent Exits</div>
             <div className="space-y-1.5">
-              {exitItems.slice(0, 3).map((item) => (
+              {liveExits.slice(0, 3).map((item) => (
                 <div key={item.id} className="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
                   <div>
                     <div className="text-sm font-medium text-gray-800">{item.company}</div>
