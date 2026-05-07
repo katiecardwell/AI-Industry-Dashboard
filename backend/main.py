@@ -22,6 +22,7 @@ _news_cache:      TTLCache = TTLCache(maxsize=10, ttl=900)    # 15 min
 _commodity_cache: TTLCache = TTLCache(maxsize=10, ttl=3600)   # 60 min
 _social_cache:    TTLCache = TTLCache(maxsize=10, ttl=1800)   # 30 min
 _insights_cache:  TTLCache = TTLCache(maxsize=10, ttl=3600)   # 60 min
+_deals_cache:     TTLCache = TTLCache(maxsize=10, ttl=3600)   # 60 min
 
 NEWS_API_KEY    = os.getenv("NEWS_API_KEY", "")
 FMP_API_KEY     = os.getenv("FMP_API_KEY", "")
@@ -101,6 +102,17 @@ MOCK_INSIGHTS = [
     {"company": "Kevin's Natural Foods","subSector": "Refrigerated Entrees",     "score": 84, "thesis": "Clean-label refrigerated meals growing 40%+ YoY with white space in club and foodservice channels. Founder-led with succession opportunity.", "drivers": ["Channel Expansion", "Clean Label Trend", "Founder Transition"]},
     {"company": "Poppi",                "subSector": "Functional Beverages",      "score": 82, "thesis": "Prebiotic soda category creator with massive social media presence. Strong retail ACV gains. Potential strategic exit to a major beverage player.", "drivers": ["Category Creation", "Social Momentum", "Strategic Acquirer Interest"]},
     {"company": "Tessemae's",           "subSector": "Condiments / Dressings",   "score": 79, "thesis": "Organic refrigerated dressings with loyal consumer base. Underpenetrated in food service and international. Balance sheet restructuring creates entry point.", "drivers": ["Organic Premium", "Foodservice Upside", "Distressed Entry"]},
+]
+
+MOCK_DEALS = [
+    {"id": 1,  "date": "2024-08-14", "target": "Kellanova",        "buyer": "Mars Inc.",          "type": "Acquisition",    "sector": "Snacks",     "evAmount": "$35.9B", "status": "Closed"},
+    {"id": 2,  "date": "2024-06-01", "target": "Liquid I.V.",      "buyer": "Unilever",           "type": "Acquisition",    "sector": "Beverages",  "evAmount": "$700M",  "status": "Closed"},
+    {"id": 3,  "date": "2024-04-10", "target": "Sovos Brands",     "buyer": "Campbell Soup",      "type": "Acquisition",    "sector": "Sauces",     "evAmount": "$2.7B",  "status": "Closed"},
+    {"id": 4,  "date": "2024-03-20", "target": "Vital Proteins",   "buyer": "Nestlé",             "type": "Acquisition",    "sector": "Nutrition",  "evAmount": "$900M",  "status": "Closed"},
+    {"id": 5,  "date": "2024-02-15", "target": "Poppi",            "buyer": "PepsiCo",            "type": "Acquisition",    "sector": "Beverages",  "evAmount": "$1.95B", "status": "Closed"},
+    {"id": 6,  "date": "2024-01-08", "target": "Chomps",           "buyer": "Undisclosed PE",     "type": "Growth Equity",  "sector": "Snacks",     "evAmount": "$100M",  "status": "Closed"},
+    {"id": 7,  "date": "2023-12-01", "target": "Daily Harvest",    "buyer": "Wonder Group",       "type": "Acquisition",    "sector": "Meal Kits",  "evAmount": "$100M",  "status": "Closed"},
+    {"id": 8,  "date": "2023-10-18", "target": "Chobani",          "buyer": "Lactalis",           "type": "Minority Stake", "sector": "Dairy",      "evAmount": "$800M",  "status": "Closed"},
 ]
 
 # FMP commodity symbol map
@@ -308,6 +320,79 @@ Respond with ONLY valid JSON array, no markdown."""
 
     _insights_cache[cache_key] = result
     return result
+
+# ---------------------------------------------------------------------------
+# /api/deals  — NewsAPI M&A search → Anthropic deal extraction
+# ---------------------------------------------------------------------------
+
+@app.get("/api/deals")
+async def get_deals():
+    cache_key = "deals"
+    if cache_key in _deals_cache:
+        return _deals_cache[cache_key]
+
+    if not NEWS_API_KEY:
+        return {"source": "mock", "deals": MOCK_DEALS}
+
+    query = 'food OR beverage AND (acquired OR acquisition OR merger OR "private equity" OR buyout OR IPO OR "growth equity")'
+    url = (
+        f"https://newsapi.org/v2/everything"
+        f"?q={query}&language=en&sortBy=publishedAt&pageSize=20"
+        f"&apiKey={NEWS_API_KEY}"
+    )
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            return {"source": "mock", "deals": MOCK_DEALS}
+
+    articles = resp.json().get("articles", [])
+    headlines = "\n".join(
+        f"- [{a.get('publishedAt','')[:10]}] {a.get('title','')} ({a.get('source',{}).get('name','')})"
+        for a in articles[:15]
+    )
+
+    if not ANTHROPIC_KEY:
+        return {"source": "mock", "deals": MOCK_DEALS}
+
+    prompt = f"""You are a PE deal analyst. From the news headlines below, extract food & beverage M&A transactions, capital raises, and exits.
+
+Headlines:
+{headlines}
+
+Return a JSON array of deals found. Each deal must have these fields:
+- date (YYYY-MM-DD)
+- target (company being acquired/funded)
+- buyer (acquirer or investor name)
+- type (one of: Acquisition, Growth Equity, Buyout, IPO, Distressed Sale, Minority Stake)
+- sector (short category e.g. Snacks, Beverages, Dairy, etc.)
+- evAmount (deal value as string e.g. "$1.2B" or "Undisclosed")
+- status (Closed or Rumored)
+
+Only include clear deals — skip general industry news. If no deals found, return empty array [].
+Respond with ONLY valid JSON array, no markdown."""
+
+    try:
+        import json
+        client = _anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        live_deals = json.loads(message.content[0].text)
+        # Add sequential IDs and merge with mock for volume
+        for i, d in enumerate(live_deals):
+            d["id"] = i + 1
+        # If we got real deals, use them; otherwise fall back
+        deals = live_deals if live_deals else MOCK_DEALS
+        result = {"source": "live" if live_deals else "mock", "deals": deals}
+    except Exception:
+        result = {"source": "mock", "deals": MOCK_DEALS}
+
+    _deals_cache[cache_key] = result
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Helpers

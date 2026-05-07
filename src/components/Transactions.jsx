@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import { transactions } from '../mockData';
+import { transactions as mockTransactions } from '../mockData';
+import { useLiveData } from '../useLiveData';
 
 const TYPE_OPTIONS = ['All Types', 'Acquisition', 'Buyout', 'Growth Equity', 'Minority Stake', 'Distressed Sale', 'Carve-out', 'Series D'];
 const DATE_OPTIONS = ['All Time', 'Last 30 days', 'Last 60 days', 'Last 90 days'];
@@ -27,8 +28,20 @@ export default function Transactions() {
   const [sectorFilter, setSectorFilter] = useState('All Sectors');
   const [search, setSearch] = useState('');
 
+  const { data: dealsData, source: dealsSource } = useLiveData('/api/deals', { deals: mockTransactions }, 60 * 60 * 1000);
+  const transactions = (dealsData?.deals ?? mockTransactions).map((d, i) => ({
+    id:       d.id ?? i,
+    date:     d.date,
+    target:   d.target,
+    buyer:    d.buyer,
+    type:     d.type,
+    sector:   d.sector,
+    evAmount: d.evAmount,
+    status:   d.status ?? 'Closed',
+  }));
+
   const filtered = useMemo(() => {
-    const now = new Date('2025-11-15');
+    const now = new Date();
     return transactions.filter((tx) => {
       if (typeFilter !== 'All Types' && tx.type !== typeFilter) return false;
       if (sectorFilter !== 'All Sectors' && tx.sector !== sectorFilter) return false;
@@ -49,7 +62,7 @@ export default function Transactions() {
       <div className="mb-6">
         <h2 className="text-lg font-semibold text-gray-900">Transactions</h2>
         <p className="text-sm text-gray-500 mt-0.5">
-          M&A deals, capital raises, and exits in Food & Beverage
+          {dealsSource === 'live' ? 'Live deals extracted from news · refreshes hourly' : 'M&A deals, capital raises, and exits in Food & Beverage'}
         </p>
       </div>
 

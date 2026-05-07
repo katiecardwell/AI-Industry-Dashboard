@@ -1,5 +1,5 @@
 import KPIBar from './KPIBar';
-import { transactions, news as mockNews, distressItems, exitItems } from '../mockData';
+import { transactions as mockTransactions, news as mockNews, distressItems, exitItems } from '../mockData';
 import { useLiveData } from '../useLiveData';
 
 function SectionHeader({ title, subtitle, link = 'View all →' }) {
@@ -33,6 +33,8 @@ function TagBadge({ tag }) {
 }
 
 export default function Overview() {
+  const { data: dealsData } = useLiveData('/api/deals', { deals: mockTransactions }, 60 * 60 * 1000);
+  const transactions = (dealsData?.deals ?? mockTransactions).map((d, i) => ({ ...d, id: d.id ?? i }));
   const recentTx = transactions.slice(0, 5);
 
   const { data: newsData, source: newsSource } = useLiveData('/api/news', { articles: mockNews });
